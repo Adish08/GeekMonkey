@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Google Smart AI Redirect (Minimal Strict)
+// @name         Google Smart AI Redirect (Tab-Scoped Strict)
 // @namespace    http://tampermonkey.net
-// @version      2026.4.0
-// @description  Minimal, robust redirect to AI Mode. Respects all manual mode switches.
+// @version      2026.4.2
+// @description  Robust redirect to AI Mode utilizing isolated sessionStorage to permit manual tab toggling.
 // @author       adish08
 // @match        *://www.google.com/search*
 // @grant        none
@@ -12,32 +12,60 @@
 (function () {
     'use strict';
 
-    const params = new URLSearchParams(window.location.search);
+    const url = new URL(window.location.href);
+    const params = url.searchParams;
     const query = params.get('q');
-    const tbm = params.get('tbm');
     const udm = params.get('udm');
-    const KEY_LAST_QUERY = 'sa_last_ai_query';
+    const tbm = params.get('tbm');
 
-    // 1. If in AI Mode: Save query to memory, then stop.
-    if (udm === '50') {
-        if (query) sessionStorage.setItem(KEY_LAST_QUERY, query);
+    // Configuration
+    const MIN_QUERY_LENGTH = 5;
+    const KEY_MODE = 'sa_active_mode';
+    const KEY_QUERY = 'sa_last_query';
+
+    if (!query) return;
+
+    const lastMode = sessionStorage.getItem(KEY_MODE);
+    const lastQuery = sessionStorage.getItem(KEY_QUERY);
+
+    // 1. Manual Tab Toggle Validation
+    // If the query is identical to the one in memory, you clicked a UI tab. 
+    // We register the mode change and abort the redirect.
+    if (query === lastQuery) {
+        if (udm === '50') sessionStorage.setItem(KEY_MODE, 'ai');
+        else if (tbm || udm) sessionStorage.setItem(KEY_MODE, 'other');
+        else sessionStorage.setItem(KEY_MODE, 'standard');
         return;
     }
 
-    // 2. If in ANY specific tab (Images, News, Web, etc.), stop.
-    // This protects against "udm=2" (Images) or "tbm=isch".
-    if (udm || tbm) return;
+    // 2. Memory Update for New Queries
+    sessionStorage.setItem(KEY_QUERY, query);
 
-    // 3. If in Standard Mode:
-    // Check if this is the EXACT SAME query we just saw in AI mode.
-    // If so, it means the user manually clicked "All". Respect it.
-    if (query === sessionStorage.getItem(KEY_LAST_QUERY)) return;
-
-    // 4. Trigger Logic (New Searches Only)
-    // If we are here, it's a fresh search in Standard Mode.
-    if (query && (query.length > 20 || query.includes('?'))) {
-        params.set('udm', '50');
-        window.location.replace(window.location.origin + window.location.pathname + '?' + params.toString());
+    // 3. Explicit Parameter Enforcement
+    // If Google's form natively passed the parameter, update state and exit.
+    if (udm === '50') {
+        sessionStorage.setItem(KEY_MODE, 'ai');
+        return;
+    } else if (tbm || udm) {
+        sessionStorage.setItem(KEY_MODE, 'other');
+        return;
     }
 
+    // 4. State Inheritance for Sequential Searches
+    // If you type a new query from the standard/images page, stay in that ecosystem.
+    if (lastMode === 'standard' || lastMode === 'other') {
+        sessionStorage.setItem(KEY_MODE, 'standard');
+        return;
+    }
+
+    // 5. Trigger Logic for Fresh Tabs
+    // Executes ONLY if tab memory is blank (new tab) OR if you were already in AI mode.
+    if ((!lastMode || lastMode === 'ai') && query.length >= MIN_QUERY_LENGTH) {
+        params.set('udm', '50');
+        sessionStorage.setItem(KEY_MODE, 'ai');
+        window.location.replace(url.toString());
+    } else {
+        // Fallback for sub-threshold queries
+        sessionStorage.setItem(KEY_MODE, 'standard');
+    }
 })();
